@@ -1,5 +1,5 @@
 /**
- * Copyright 2021 Google LLC
+ * Copyright 2024 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,28 +14,12 @@
  * limitations under the License.
  */
 
-terraform {
-  required_version = ">= 1.5"
-  required_providers {
-    google = {
-      source  = "hashicorp/google"
-      version = "<= 4.74, != 4.75.0"
-    }
-    google-beta = {
-      source  = "hashicorp/google-beta"
-      version = "<= 4.74, != 4.75.0"
-    }
-    random = {
-      source  = "hashicorp/random"
-      version = ">= 2.2"
-    }
-    time = {
-      source  = "hashicorp/time"
-      version = "~> 0.12"
-    }
-  }
+output "endpoint" {
+  value       = module.three_tier_app.endpoint
+  description = "The url of the front end which we want to surface to the user"
+}
 
-  provider_meta "google" {
-    module_name = "blueprints/terraform/terraform-google-three-tier-web-app/v0.1.9"
-  }
+output "sqlservername" {
+  value       = module.three_tier_app.sqlservername
+  description = "The name of the database that we randomly generated."
 }

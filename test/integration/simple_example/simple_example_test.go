@@ -22,6 +22,7 @@ import (
 	"github.com/GoogleCloudPlatform/cloud-foundation-toolkit/infra/blueprint-test/pkg/gcloud"
 	"github.com/GoogleCloudPlatform/cloud-foundation-toolkit/infra/blueprint-test/pkg/tft"
 	"github.com/GoogleCloudPlatform/cloud-foundation-toolkit/infra/blueprint-test/pkg/utils"
+	test "github.com/GoogleCloudPlatform/terraform-google-three-tier-web-app/test/integration"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,7 +37,10 @@ func TestSimpleExample(t *testing.T) {
 	example := tft.NewTFBlueprintTest(t, tft.WithRetryableTerraformErrors(retryErrors, 10, time.Minute))
 
 	example.DefineVerify(func(assert *assert.Assertions) {
+		// DefaultVerify asserts no resource changes exist after apply.
+		// It helps ensure that a second "terraform apply" wouldn't result in resource deletions/replacements.
 		example.DefaultVerify(assert)
+
 		sqlname := example.GetStringOutput("sqlservername")
 		projectID := example.GetTFSetupStringOutput("project_id")
 		prefix := "three-tier-app"
@@ -127,6 +131,9 @@ func TestSimpleExample(t *testing.T) {
 				assert.Equal("ENABLED", match.Get("state").String(), "%s service should be enabled", tc.service)
 			})
 		}
+
+		deploymentUrl := example.GetStringOutput("endpoint")
+		test.TestDeploymentUrl(t, deploymentUrl)
 	})
 	example.Test()
 }

@@ -19,13 +19,31 @@ data "google_project" "project" {
 }
 
 locals {
-  api_image = "gcr.io/sic-container-repo/todo-api-postgres:latest"
+  api_image = (var.database_type == "mysql" ? "gcr.io/sic-container-repo/todo-api" : "gcr.io/sic-container-repo/todo-api-postgres:latest")
   fe_image  = "gcr.io/sic-container-repo/todo-fe"
+
+  api_env_vars_postgresql = {
+    redis_host = google_redis_instance.main.host
+    db_host    = google_sql_database_instance.main.ip_address[0].ip_address
+    db_user    = google_service_account.runsa.email
+    db_conn    = google_sql_database_instance.main.connection_name
+    db_name    = "todo"
+    redis_port = "6379"
+  }
+
+  api_env_vars_mysql = {
+    REDISHOST = google_redis_instance.main.host
+    todo_host = google_sql_database_instance.main.ip_address[0].ip_address
+    todo_user = "foo"
+    todo_pass = "bar"
+    todo_name = "todo"
+    REDISPORT = "6379"
+  }
 }
 
 module "project-services" {
   source                      = "terraform-google-modules/project-factory/google//modules/project_services"
-  version                     = "13.0.0"
+  version                     = "18.0.0"
   disable_services_on_destroy = false
 
   project_id  = var.project_id
@@ -79,7 +97,7 @@ resource "google_service_networking_connection" "main" {
   network                 = google_compute_network.main.self_link
   service                 = "servicenetworking.googleapis.com"
   reserved_peering_ranges = [google_compute_global_address.main.name]
-
+  depends_on              = [google_compute_network.main]
 }
 
 resource "google_vpc_access_connector" "main" {
@@ -90,6 +108,14 @@ resource "google_vpc_access_connector" "main" {
   network        = google_compute_network.main.name
   region         = var.region
   max_throughput = 300
+  depends_on     = [time_sleep.wait_before_destroying_network]
+}
+
+# The google_vpc_access_connector resource creates some firewalls that sometimes takes a while to destroy
+# and causes errors when we try to destroy the VPC network (google_compute_network).
+resource "time_sleep" "wait_before_destroying_network" {
+  depends_on       = [google_compute_network.main]
+  destroy_duration = "60s"
 }
 
 # Looked at using the module, but there doesn't seem to be a huge win there.
@@ -117,7 +143,7 @@ resource "random_id" "id" {
 # Handle Database
 resource "google_sql_database_instance" "main" {
   name             = "${var.deployment_name}-db-${random_id.id.hex}"
-  database_version = "POSTGRES_14"
+  database_version = (var.database_type == "mysql" ? "MYSQL_8_0" : "POSTGRES_14")
   region           = var.region
   project          = var.project_id
 
@@ -135,9 +161,12 @@ resource "google_sql_database_instance" "main" {
     location_preference {
       zone = var.zone
     }
-    database_flags {
-      name  = "cloudsql.iam_authentication"
-      value = "on"
+    dynamic "database_flags" {
+      for_each = var.database_type == "postgresql" ? [1] : []
+      content {
+        name  = "cloudsql.iam_authentication"
+        value = "on"
+      }
     }
   }
   deletion_protection = false
@@ -150,10 +179,11 @@ resource "google_sql_database_instance" "main" {
 
 resource "google_sql_user" "main" {
   project         = var.project_id
-  name            = "${google_service_account.runsa.account_id}@${var.project_id}.iam"
-  type            = "CLOUD_IAM_SERVICE_ACCOUNT"
   instance        = google_sql_database_instance.main.name
   deletion_policy = "ABANDON"
+  name            = var.database_type == "postgresql" ? "${google_service_account.runsa.account_id}@${var.project_id}.iam" : "foo"
+  type            = var.database_type == "postgresql" ? "CLOUD_IAM_SERVICE_ACCOUNT" : null
+  password        = var.database_type == "mysql" ? "bar" : null
 }
 
 resource "google_sql_database" "database" {
@@ -174,31 +204,13 @@ resource "google_cloud_run_service" "api" {
       service_account_name = google_service_account.runsa.email
       containers {
         image = local.api_image
-        env {
-          name  = "redis_host"
-          value = google_redis_instance.main.host
+        dynamic "env" {
+          for_each = var.database_type == "postgresql" ? local.api_env_vars_postgresql : local.api_env_vars_mysql
+          content {
+            name  = env.key
+            value = env.value
+          }
         }
-        env {
-          name  = "db_host"
-          value = google_sql_database_instance.main.ip_address[0].ip_address
-        }
-        env {
-          name  = "db_user"
-          value = google_service_account.runsa.email
-        }
-        env {
-          name  = "db_conn"
-          value = google_sql_database_instance.main.connection_name
-        }
-        env {
-          name  = "db_name"
-          value = "todo"
-        }
-        env {
-          name  = "redis_port"
-          value = "6379"
-        }
-
       }
     }
 
@@ -209,7 +221,9 @@ resource "google_cloud_run_service" "api" {
         "run.googleapis.com/client-name"          = "terraform"
         "run.googleapis.com/vpc-access-egress"    = "all"
         "run.googleapis.com/vpc-access-connector" = google_vpc_access_connector.main.id
-
+      }
+      labels = {
+        "run.googleapis.com/startupProbeType" = "Default"
       }
     }
   }
@@ -245,6 +259,9 @@ resource "google_cloud_run_service" "fe" {
     metadata {
       annotations = {
         "autoscaling.knative.dev/maxScale" = "8"
+      }
+      labels = {
+        "run.googleapis.com/startupProbeType" = "Default"
       }
     }
   }
